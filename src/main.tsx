@@ -3,6 +3,8 @@ import App from "./App.tsx";
 import "./index.css";
 import "./styles/globals.css";
 import { initializeTheme } from "./lib/utils";
+import "./i18n/en";
+import "./i18n/zh";
 
 // Initialize theme before rendering
 initializeTheme();
