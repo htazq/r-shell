@@ -91,6 +91,33 @@ export function PtyTerminal({
     highWater: 5,
     lowWater: 2,
   });
+  const inputEncoderRef = React.useRef(new TextEncoder());
+
+  const sendInputToPty = React.useCallback((data: string): boolean => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      return false;
+    }
+
+    const dataBytes = Array.from(inputEncoderRef.current.encode(data));
+    ws.send(JSON.stringify({
+      type: 'Input',
+      connection_id: connectionId,
+      data: dataBytes,
+    }));
+    return true;
+  }, [connectionId]);
+
+  const pasteClipboardIntoPty = React.useCallback(async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text && !sendInputToPty(text)) {
+        toast.error('Terminal not connected');
+      }
+    } catch (_error) {
+      toast.error('Failed to read from clipboard');
+    }
+  }, [sendInputToPty]);
 
   // Get appearance settings - reloads when appearanceKey changes
   const appearance = React.useMemo(() => loadAppearanceSettings(), [appearanceKey]);
@@ -198,11 +225,10 @@ export function PtyTerminal({
         return false;
       }
       
-      // Handle paste shortcut - return true to let the browser handle the native paste event,
-      // which xterm will pick up via onData. We must NOT manually send clipboard content here
-      // because onData already sends it, which would cause a double paste.
       if (modKey && key === 'v') {
-        return true;
+        event.preventDefault();
+        void pasteClipboardIntoPty();
+        return false;
       }
       
       // Handle search shortcut
@@ -528,24 +554,9 @@ export function PtyTerminal({
 
     connectWebSocket();
 
-    // Reuse a single TextEncoder across all input events to avoid
-    // per-keystroke allocation overhead.
-    const inputEncoder = new TextEncoder();
-
     // Handle user input
     const inputDisposable = term.onData((data: string) => {
-      const ws = wsRef.current;
-      if (!ws || ws.readyState !== WebSocket.OPEN) return;
-      
-      // Convert string to bytes for binary data
-      const dataBytes = Array.from(inputEncoder.encode(data));
-      
-      // Send as JSON message (matches server's Input message type)
-      ws.send(JSON.stringify({
-        type: 'Input',
-        connection_id: connectionId,
-        data: dataBytes,
-      }));
+      sendInputToPty(data);
     });
 
     // Handle terminal resize — deduplicate to avoid flooding the PTY with
@@ -652,7 +663,7 @@ export function PtyTerminal({
       
       term.dispose();
     };
-  }, [connectionId, connectionName, host, username, terminalKey, reconnectKey]);
+  }, [connectionId, connectionName, host, username, terminalKey, reconnectKey, pasteClipboardIntoPty, sendInputToPty]);
   // NOTE: themeKey and appearanceKey are intentionally NOT in the deps above.
   // Including them would tear down the WebSocket + PTY session on every theme
   // change (e.g. macOS auto Dark/Light switch), killing any running remote
@@ -717,31 +728,8 @@ export function PtyTerminal({
   }, []);
 
   const handlePaste = React.useCallback(async () => {
-    const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
-      toast.error('Terminal not connected');
-      return;
-    }
-    
-    try {
-      const text = await navigator.clipboard.readText();
-      if (text) {
-        // Convert string to bytes for binary data
-        const encoder = new TextEncoder();
-        const dataBytes = Array.from(encoder.encode(text));
-        
-        const inputMsg = {
-          type: 'Input',
-          connection_id: connectionId,
-          data: dataBytes,
-        };
-        
-        ws.send(JSON.stringify(inputMsg));
-      }
-    } catch (_error) {
-      toast.error('Failed to read from clipboard');
-    }
-  }, [connectionId]);
+    await pasteClipboardIntoPty();
+  }, [pasteClipboardIntoPty]);
 
   const handleClear = React.useCallback(() => {
     xtermRef.current?.clear();
